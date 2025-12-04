@@ -1,0 +1,9 @@
+{
+  "name": "QualiSync AI",
+  "description": "A Unified Quality Intelligence Bridge powered by a Multi-Agent System. Features a self-correcting Coder-Critic loop, Healer agents, and real-time risk heatmaps.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera",
+    "display-capture"
+  ]
+}
