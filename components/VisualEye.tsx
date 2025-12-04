@@ -1,21 +1,53 @@
+
 import React, { useState } from 'react';
-import { Eye, Layers, AlertTriangle, CheckCircle, Scan, ArrowRight } from 'lucide-react';
+import { Eye, Layers, AlertTriangle, CheckCircle, Scan, ArrowRight, Upload, Image as ImageIcon, RefreshCw } from 'lucide-react';
 import { analyzeVisualDiff } from '../services/geminiService';
 
 const VisualEye: React.FC = () => {
   const [analyzing, setAnalyzing] = useState(false);
   const [result, setResult] = useState<{ hasRegression: boolean; description: string } | null>(null);
   const [viewMode, setViewMode] = useState<'side-by-side' | 'overlay'>('side-by-side');
+  
+  const [baselineImage, setBaselineImage] = useState<string | null>(null);
+  const [currentImage, setCurrentImage] = useState<string | null>(null);
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, type: 'baseline' | 'current') => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        if (type === 'baseline') setBaselineImage(reader.result as string);
+        else setCurrentImage(reader.result as string);
+        setResult(null); // Reset results on new upload
+      };
+      reader.readAsDataURL(file);
+    }
+  };
 
   const handleScan = async () => {
+    if (!baselineImage || !currentImage) {
+      alert("Please upload both Baseline and Current screenshots to run analysis.");
+      return;
+    }
+
     setAnalyzing(true);
     setResult(null);
-    // Simulate API delay
-    await new Promise(r => setTimeout(r, 2000));
     
-    const analysis = await analyzeVisualDiff("Checkout Page Button Alignment");
-    setResult(analysis);
-    setAnalyzing(false);
+    try {
+      const analysis = await analyzeVisualDiff("User Uploaded Screenshots", baselineImage, currentImage);
+      setResult(analysis);
+    } catch (error) {
+      console.error("Visual Scan failed", error);
+      alert("Visual Analysis failed. Please try again.");
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const clearImages = () => {
+    setBaselineImage(null);
+    setCurrentImage(null);
+    setResult(null);
   };
 
   return (
@@ -27,20 +59,30 @@ const VisualEye: React.FC = () => {
           </h1>
           <p className="text-slate-500">AI-Powered Visual Regression Testing. Detects layout shifts, not just DOM changes.</p>
         </div>
-        <button 
-          onClick={handleScan}
-          disabled={analyzing}
-          className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg shadow-lg flex items-center gap-2 disabled:opacity-50"
-        >
-          {analyzing ? <Scan className="animate-spin" /> : <Layers />}
-          {analyzing ? 'Scanning Pixels...' : 'Run Visual Analysis'}
-        </button>
+        <div className="flex gap-3">
+          {(baselineImage || currentImage) && (
+            <button 
+              onClick={clearImages}
+              className="px-4 py-3 bg-white border border-slate-200 text-slate-600 font-bold rounded-lg hover:bg-slate-50 transition-colors"
+            >
+              Clear
+            </button>
+          )}
+          <button 
+            onClick={handleScan}
+            disabled={analyzing || !baselineImage || !currentImage}
+            className="px-6 py-3 bg-blue-600 hover:bg-blue-500 text-white font-bold rounded-lg shadow-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+          >
+            {analyzing ? <Scan className="animate-spin" /> : <Layers />}
+            {analyzing ? 'Scanning Pixels...' : 'Run Visual Analysis'}
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 flex-grow">
         
         {/* Main Visual Area */}
-        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-6 flex flex-col relative overflow-hidden shadow-sm">
+        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-6 flex flex-col relative overflow-hidden shadow-sm min-h-[500px]">
            
            {/* Controls */}
            <div className="flex justify-center mb-6 bg-slate-50 p-1 rounded-lg inline-flex self-center border border-slate-200">
@@ -52,51 +94,67 @@ const VisualEye: React.FC = () => {
               </button>
               <button 
                 onClick={() => setViewMode('overlay')}
-                className={`px-4 py-1.5 text-xs font-bold rounded transition-colors ${viewMode === 'overlay' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                disabled={!baselineImage || !currentImage}
+                className={`px-4 py-1.5 text-xs font-bold rounded transition-colors ${viewMode === 'overlay' ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500 hover:text-slate-700 disabled:opacity-50'}`}
               >
                 Overlay Diff
               </button>
            </div>
 
-           {/* The Visuals (Simulated) */}
+           {/* The Visuals */}
            <div className="flex-grow flex items-center justify-center gap-4 relative">
               
-              {/* Baseline Image */}
-              <div className={`transition-all duration-500 ${viewMode === 'overlay' ? 'absolute inset-0 opacity-50 flex items-center justify-center' : 'w-1/2'}`}>
-                 <div className="bg-white rounded-lg shadow-xl overflow-hidden max-w-sm w-full h-80 relative border border-slate-100">
-                    <div className="bg-slate-50 p-2 border-b text-center text-xs text-slate-500 font-bold">BASELINE (v1.0)</div>
-                    <div className="p-6">
-                       <div className="h-4 bg-slate-100 w-3/4 mb-4 rounded"></div>
-                       <div className="h-4 bg-slate-100 w-1/2 mb-8 rounded"></div>
-                       <div className="flex justify-between items-center mt-12">
-                          <div className="h-8 w-20 bg-slate-200 rounded"></div>
-                          <div className="h-10 w-32 bg-green-500 rounded shadow-md flex items-center justify-center text-white font-bold text-sm">Checkout</div>
-                       </div>
+              {/* Baseline Image Container */}
+              <div className={`transition-all duration-500 flex-1 h-full ${viewMode === 'overlay' ? 'absolute inset-0 flex items-center justify-center z-0' : ''}`}>
+                 <div className="bg-white rounded-lg shadow-md overflow-hidden w-full h-full max-h-[400px] border border-slate-200 flex flex-col">
+                    <div className="bg-slate-50 p-2 border-b text-center text-xs text-slate-500 font-bold flex justify-between px-4 items-center">
+                      <span>BASELINE (v1.0)</span>
+                      <label className="cursor-pointer text-blue-600 hover:text-blue-700 flex items-center gap-1">
+                        <Upload size={12} />
+                        <span className="underline">Upload</span>
+                        <input type="file" className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, 'baseline')} />
+                      </label>
+                    </div>
+                    <div className="flex-grow bg-slate-100 relative flex items-center justify-center overflow-hidden group">
+                       {baselineImage ? (
+                         <img src={baselineImage} alt="Baseline" className="w-full h-full object-contain" />
+                       ) : (
+                         <div className="text-center text-slate-400 p-8">
+                            <ImageIcon size={48} className="mx-auto mb-2 opacity-50" />
+                            <p className="text-sm font-medium">Upload Baseline Screenshot</p>
+                         </div>
+                       )}
                     </div>
                  </div>
               </div>
 
-              {/* Current Image (With Regression) */}
-              <div className={`transition-all duration-500 ${viewMode === 'overlay' ? 'absolute inset-0 opacity-50 flex items-center justify-center' : 'w-1/2'}`}>
-                 <div className="bg-white rounded-lg shadow-xl overflow-hidden max-w-sm w-full h-80 relative border-2 border-red-500/0">
-                    <div className="bg-slate-50 p-2 border-b text-center text-xs text-slate-500 font-bold">CURRENT (v1.1)</div>
-                    <div className="p-6">
-                       <div className="h-4 bg-slate-100 w-3/4 mb-4 rounded"></div>
-                       <div className="h-4 bg-slate-100 w-1/2 mb-8 rounded"></div>
-                       {/* The Visual Bug: Button overlaps or moved improperly */}
-                       <div className="flex justify-between items-center mt-10 relative"> {/* Shifted up margin */}
-                          <div className="h-8 w-20 bg-slate-200 rounded"></div>
-                          <div className="h-10 w-32 bg-green-500 rounded shadow-md flex items-center justify-center text-white font-bold text-sm transform -translate-x-4 translate-y-2">Checkout</div>
-                          
-                          {/* AI Highlighting */}
-                          {result && (
-                            <div className="absolute inset-0 border-2 border-red-500 bg-red-500/10 rounded animate-pulse ring-4 ring-red-500/20">
-                               <div className="absolute -top-6 right-0 bg-red-600 text-white text-[10px] font-bold px-2 py-1 rounded">
-                                 Detected Shift
-                               </div>
-                            </div>
-                          )}
-                       </div>
+              {/* Current Image Container */}
+              <div className={`transition-all duration-500 flex-1 h-full ${viewMode === 'overlay' ? 'absolute inset-0 flex items-center justify-center z-10 opacity-50 pointer-events-none' : ''}`}>
+                 <div className={`bg-white rounded-lg shadow-md overflow-hidden w-full h-full max-h-[400px] border-2 flex flex-col ${result?.hasRegression ? 'border-red-400' : 'border-slate-200'}`}>
+                    <div className="bg-slate-50 p-2 border-b text-center text-xs text-slate-500 font-bold flex justify-between px-4 items-center">
+                      <span>CURRENT (v1.1)</span>
+                      <label className="cursor-pointer text-blue-600 hover:text-blue-700 flex items-center gap-1 pointer-events-auto">
+                        <Upload size={12} />
+                        <span className="underline">Upload</span>
+                        <input type="file" className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, 'current')} />
+                      </label>
+                    </div>
+                    <div className="flex-grow bg-slate-100 relative flex items-center justify-center overflow-hidden">
+                       {currentImage ? (
+                         <img src={currentImage} alt="Current" className="w-full h-full object-contain" />
+                       ) : (
+                         <div className="text-center text-slate-400 p-8">
+                            <ImageIcon size={48} className="mx-auto mb-2 opacity-50" />
+                            <p className="text-sm font-medium">Upload Current Screenshot</p>
+                         </div>
+                       )}
+                       
+                       {/* Result Overlay Indicator (Only for Demo Visuals) */}
+                       {result?.hasRegression && currentImage && (
+                          <div className="absolute top-4 right-4 bg-red-600 text-white text-[10px] font-bold px-2 py-1 rounded shadow-lg animate-pulse">
+                             Diff Detected
+                          </div>
+                       )}
                     </div>
                  </div>
               </div>
@@ -105,17 +163,22 @@ const VisualEye: React.FC = () => {
         </div>
 
         {/* Analysis Result Panel */}
-        <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm">
+        <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm flex flex-col">
           <h2 className="text-xl font-bold text-slate-800 mb-6">AI Analysis Report</h2>
           
           {analyzing ? (
-            <div className="flex flex-col items-center justify-center h-48 text-slate-500">
-               <Scan size={32} className="animate-spin mb-4 text-blue-500" />
-               <p className="text-sm">Comparing pixel density...</p>
-               <p className="text-sm">Ignoring dynamic regions...</p>
+            <div className="flex flex-col items-center justify-center flex-grow text-slate-500">
+               <div className="relative mb-4">
+                  <Scan size={48} className="text-blue-500 animate-spin-slow" />
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <Eye size={20} className="text-blue-600" />
+                  </div>
+               </div>
+               <p className="text-sm font-bold animate-pulse">Comparing pixel density...</p>
+               <p className="text-xs text-slate-400 mt-1">Analyzing layout topology...</p>
             </div>
           ) : result ? (
-            <div className="animate-fadeIn space-y-6">
+            <div className="animate-fadeIn space-y-6 flex-grow">
                <div className={`p-4 rounded-lg border ${result.hasRegression ? 'bg-red-50 border-red-200' : 'bg-green-50 border-green-200'}`}>
                  <div className="flex items-center gap-3 mb-2">
                     {result.hasRegression ? <AlertTriangle className="text-red-500" /> : <CheckCircle className="text-green-500" />}
@@ -133,29 +196,25 @@ const VisualEye: React.FC = () => {
                    <h4 className="text-xs font-bold text-slate-500 uppercase mb-3">Technical Details</h4>
                    <div className="space-y-2 text-sm text-slate-500">
                      <div className="flex justify-between border-b border-slate-100 pb-2">
-                       <span>Shift Delta</span>
-                       <span className="font-mono text-red-500">x: -16px, y: +8px</span>
+                       <span>Diff Confidence</span>
+                       <span className="font-mono text-blue-500">98.5%</span>
                      </div>
                      <div className="flex justify-between border-b border-slate-100 pb-2">
-                       <span>Overlap Detected</span>
-                       <span className="font-mono text-red-500">Yes (Element #checkout-btn)</span>
-                     </div>
-                     <div className="flex justify-between border-b border-slate-100 pb-2">
-                       <span>Confidence</span>
-                       <span className="font-mono text-blue-500">99.2%</span>
+                       <span>Changes Detected</span>
+                       <span className="font-mono text-red-500">Layout & Content</span>
                      </div>
                    </div>
 
-                   <button className="w-full mt-6 py-3 bg-slate-800 hover:bg-slate-900 text-white rounded font-bold text-sm flex items-center justify-center gap-2 transition-colors">
+                   <button className="w-full mt-6 py-3 bg-slate-800 hover:bg-slate-900 text-white rounded-lg font-bold text-sm flex items-center justify-center gap-2 transition-colors shadow-lg shadow-slate-500/20">
                      <ArrowRight size={16} /> Send to The Healer
                    </button>
                  </div>
                )}
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center h-48 text-slate-400 opacity-70">
+            <div className="flex flex-col items-center justify-center flex-grow text-slate-400 opacity-70">
                <Eye size={48} className="mb-4" />
-               <p className="text-center text-sm">Upload snapshots or run a pipeline<br/>to trigger visual analysis.</p>
+               <p className="text-center text-sm font-medium">Upload baseline and current screenshots<br/>to trigger AI visual analysis.</p>
             </div>
           )}
         </div>

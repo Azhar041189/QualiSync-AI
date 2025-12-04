@@ -312,31 +312,51 @@ export const generateSyntheticData = async (
 };
 
 export const analyzeVisualDiff = async (
-  context: string
+  context: string,
+  baselineBase64?: string | null,
+  currentBase64?: string | null
 ): Promise<{ hasRegression: boolean; description: string }> => {
   const model = 'gemini-2.5-flash';
   const systemInstruction = `You are a "Visual QA Agent". 
-  Your Goal: Explain a simulated visual regression based on the user's description.
-  Output Format: Concise summary of the visual bug.`;
+  Your Goal: Compare two images (Baseline vs Current) or analyze the description if images are missing.
+  Identify layout shifts, missing elements, overlapping content, or color mismatches.
+  Output Format: Concise summary of the visual bug. If no images are provided, simulate a finding based on context.`;
 
-  const prompt = `
-    Context: The user is comparing two screenshots of ${context}.
-    Simulate a visual regression finding where a button overlaps text or is misaligned.
-    Describe the error professionally.
-  `;
+  let promptParts: any[] = [];
+  
+  if (baselineBase64 && currentBase64) {
+      // Remove data URL prefix if present for the API call (though inlineData usually expects it or raw bytes, 
+      // the SDK handles base64 string directly in inlineData.data)
+      // Standard data URL format: data:image/png;base64,....
+      const cleanBaseline = baselineBase64.split(',')[1] || baselineBase64;
+      const cleanCurrent = currentBase64.split(',')[1] || currentBase64;
+
+      promptParts.push({ text: "Here is the Baseline Image (Version 1.0):" });
+      promptParts.push({ inlineData: { mimeType: "image/png", data: cleanBaseline } });
+      promptParts.push({ text: "Here is the Current Image (Version 1.1):" });
+      promptParts.push({ inlineData: { mimeType: "image/png", data: cleanCurrent } });
+      promptParts.push({ text: "Compare these two images strictly. Are there any visual regressions (misalignments, color changes, text overlaps, missing items)? If yes, describe them clearly. If they look identical, say 'No visual changes detected'." });
+  } else {
+      promptParts.push({ text: `Context: The user is comparing two screenshots of ${context}. Simulate a visual regression finding where a button overlaps text or is misaligned. Describe the error professionally.` });
+  }
 
   try {
     const response = await ai.models.generateContent({
       model,
-      contents: prompt,
+      contents: { parts: promptParts },
       config: { systemInstruction }
     });
+    
+    const text = response.text || "";
+    const hasRegression = !text.toLowerCase().includes("no visual changes") && !text.toLowerCase().includes("identical");
+
     return { 
-      hasRegression: true, 
-      description: response.text || "Visual alignment issue detected." 
+      hasRegression, 
+      description: text || "Analysis completed." 
     };
   } catch (error) {
-    return { hasRegression: false, description: "No visual changes detected." };
+    console.error("Visual Analysis Error:", error);
+    return { hasRegression: false, description: "Failed to analyze images. Please try again." };
   }
 };
 
