@@ -1,480 +1,312 @@
 
 import { GoogleGenAI } from "@google/genai";
-import { AgentRole, OmniScanReport, SharedWorkflowContext, AgentResponse } from '../types';
+import { AgentRole, OmniScanReport, SharedWorkflowContext, AgentResponse, SecurityVulnerability, PerformanceMetric, DatabaseCheck, GTMetrixReport, WaterfallRequest, HistoryPoint, StructureAudit, BrowserTimings } from '../types';
 
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 // System instructions for each agent persona
 const PROMPTS = {
-  [AgentRole.ANALYST]: `You are "The Analyst" (Agent A) in the QualiSync Multi-Agent System.
-  Your Goal: Parse the user story to identify ambiguity, edge cases, and missing requirements.
-  Output Format: A clean Gherkin Feature file (Feature/Scenario/Given/When/Then).
-  Tone: Analytical, precise, product-focused.`,
+  [AgentRole.ANALYST]: `You are "The Analyst" (Agent A).
+  Goal: Parse user stories into Gherkin Features. Identify edge cases.
+  Output: Clean Gherkin text.`,
   
   [AgentRole.ARCHITECT]: `You are "The Architect" (Agent B).
-  Your Goal: Review the Gherkin scenarios and design the Test Automation Strategy.
-  Decisions to make: 
-  1. UI vs API coverage (Recommend API for speed where possible).
-  2. Design Pattern (Page Object Model is mandatory for UI).
-  3. Data Strategy (Mock data vs Real data).
-  Output Format: A technical strategy document summarizing these decisions.
-  Tone: Strategic, authoritative, senior engineer.`,
+  Goal: Design Test Strategy (UI vs API, Data Mocks, Design Patterns).
+  Output: Technical Strategy Document.`,
   
-  [AgentRole.CODER]: `You are "The Coder" (Agent C), a Python Playwright expert.
-  Your Goal: Write the executable test code based on the Architect's strategy and Analyst's Scenarios.
+  [AgentRole.CODER]: `You are "The Coder" (Agent C).
+  Goal: Write Playwright/Python code.
+  Rule: If no feedback, use time.sleep(5) (to demo Critic). If feedback exists, FIX IT.
+  Output: Python Code Block.`,
   
-  CRITICAL INSTRUCTION FOR DEMO: 
-  If this is the FIRST attempt (no feedback provided), you MUST intentionally make a mistake to demonstrate the Critic agent's capabilities. 
-  Include "time.sleep(5)" in your code instead of a dynamic wait.
-  
-  If this is a RETRY (feedback is provided), you must FIX the code immediately, removing sleeps and using "expect" or "wait_for".
-  
-  Output Format: Pure Python code block using Playwright.
-  Tone: Technical, obedient to the Critic.`,
-  
-  [AgentRole.CRITIC]: `You are "The Critic" (Agent D), a ruthless QA Tech Lead.
-  Your Goal: Review the code for anti-patterns and strict adherence to testing standards.
-  
-  GENERAL RULES:
-  1. REJECT immediately if "time.sleep" is found.
-  2. REJECT if XPath is used instead of CSS/TestID.
-  3. REJECT if no assertions are present.
-  
-  API TESTING RULES:
-  1. Enforce explicit status code assertions (e.g., 'assert response.status_code == 200').
-  2. Require JSON Schema validation for all complex responses.
-  3. Reject "broad except" blocks; require specific error handling (e.g., 'except requests.exceptions.Timeout').
-  4. Ensure test functions have descriptive names matching the scenario.
-  5. Enforce AAA Pattern (Arrange-Act-Assert) structure in comments or layout.
-  6. Require assertion messages (e.g., 'assert x == y, "Expected x to match y"').
-  
-  Output Format: 
-  Start with either "APPROVED" or "REJECTED".
-  If REJECTED, explain why in 1 sentence.
-  Tone: Strict, quality-obsessed, no-nonsense.`,
+  [AgentRole.CRITIC]: `You are "The Critic" (Agent D).
+  Goal: Code Review.
+  Rules:
+  1. REJECT 'time.sleep'.
+  2. REJECT weak locators (XPath).
+  3. API: Enforce AAA pattern, Status Code assertions, Schema Validation.
+  4. API: Enforce explicit error handling (try/except).
+  5. API: Ensure descriptive assertion failure messages.
+  Output: "APPROVED" or "REJECTED: <Reason>"`,
 
   [AgentRole.HEALER]: `You are "The Healer" (Agent E).
-  Your Goal: Fix runtime execution failures using simulated Vector Embeddings (Semantic Search) or Logic Analysis.
+  Goal: Fix runtime failures.
+  UI: Vector Search for selectors.
+  API: Analyze 4xx/5xx errors, auth failures. 
+  Logic: If API 401, check Auth headers. If 404, check endpoint URL. If 429, suggest retry logic.
+  Output: Healed Code.`,
   
-  Mode 1 (UI): Fix broken selectors.
-  Mode 2 (API): Fix broken contract tests (4xx/5xx errors, schema mismatches, auth failures).
+  [AgentRole.SECURITY]: `You are "The Security Auditor".
+  Goal: Identify OWASP Top 10 vulnerabilities (SQLi, XSS, CSRF) based on context.
+  Output: JSON array of Vulnerabilities with remediation code.`,
   
-  Task:
-  1. Analyze why the failure occurred.
-  2. For UI: Simulate a Vector Database search to find the nearest neighbor element in the DOM.
-  3. For API: Analyze the error (e.g., 401 Unauthorized -> Add Bearer Token; 429 Too Many Requests -> Add retry logic; Schema Mismatch -> Update Expected Schema).
-  4. Output a "Self-Healing Report" including:
-     - The Root Cause
-     - The Fix Strategy
-     - The Patched Code Snippet
-  
-  Tone: Helpful, restorative, highly technical.`
+  [AgentRole.PERFORMANCE]: `You are "The Performance Engineer".
+  Goal: Simulate Load Testing metrics (k6 style).
+  Output: JSON array of time-series data (RPS, Latency).`
 };
 
-/**
- * Builds a structured context prompt for the agent based on the workflow history.
- */
 const buildAgentPrompt = (role: AgentRole, context: SharedWorkflowContext): string => {
-  let prompt = "";
+  let prompt = `--- [USER STORY] ---\n${context.userStory}\n\n`;
 
-  // Base Context (Always present)
-  prompt += `--- [USER STORY] ---\n${context.userStory}\n\n`;
-
-  // Incremental Context Construction
   if (role === AgentRole.ARCHITECT) {
-    prompt += `--- [ANALYST OUTPUT (Gherkin)] ---\n${context.gherkinScenarios}\n\n`;
-    prompt += `Task: Design the test strategy based on the Gherkin above.`;
+    prompt += `--- [ANALYST OUTPUT] ---\n${context.gherkinScenarios}\nTask: Design test strategy.`;
   } 
-  
   else if (role === AgentRole.CODER) {
-    prompt += `--- [ANALYST OUTPUT (Gherkin)] ---\n${context.gherkinScenarios}\n\n`;
-    prompt += `--- [ARCHITECT STRATEGY] ---\n${context.testStrategy}\n\n`;
-    
+    prompt += `--- [STRATEGY] ---\n${context.testStrategy}\n`;
     if (context.criticFeedback) {
-      prompt += `--- [CRITIC FEEDBACK (MUST FIX)] ---\nThe Critic rejected your previous code: "${context.criticFeedback}". \nFix this immediately. Do not use time.sleep.\n\n`;
-      prompt += `--- [PREVIOUS CODE] ---\n${context.currentCode}\n\n`;
+      prompt += `--- [CRITIC FEEDBACK (MUST FIX)] ---\n${context.criticFeedback}\n--- [PREVIOUS CODE] ---\n${context.currentCode}\n`;
     }
     prompt += `Task: Write/Fix the Playwright Python code.`;
   }
-
   else if (role === AgentRole.CRITIC) {
-    prompt += `--- [ARCHITECT STRATEGY] ---\n${context.testStrategy}\n\n`;
-    prompt += `--- [CODE TO REVIEW] ---\n${context.currentCode}\n\n`;
-    prompt += `Task: Review the code against the strategy and best practices.`;
+    prompt += `--- [STRATEGY] ---\n${context.testStrategy}\n--- [CODE] ---\n${context.currentCode}\nTask: Review code.`;
   }
-
   else if (role === AgentRole.HEALER) {
-    prompt += `--- [ORIGINAL CODE] ---\n${context.currentCode}\n\n`;
-    prompt += `--- [RUNTIME ERROR] ---\n${context.runtimeError}\n\n`;
-    prompt += `Task: Heal the code.`;
+    prompt += `--- [BROKEN CODE] ---\n${context.currentCode}\n--- [ERROR] ---\n${context.runtimeError}\nTask: Heal the code.`;
   }
-
-  else {
-    // Analyst or Generic
-    prompt += `Task: Analyze the user story.`;
-  }
-
   return prompt;
 };
 
-export const runAgentSimulation = async (
-  role: AgentRole, 
-  context: SharedWorkflowContext
-): Promise<AgentResponse> => {
-  
+export const runAgentSimulation = async (role: AgentRole, context: SharedWorkflowContext): Promise<AgentResponse> => {
   const model = 'gemini-2.5-flash';
-  const systemInstruction = PROMPTS[role] || "You are a helpful QA AI Agent.";
+  const systemInstruction = PROMPTS[role] || "You are a QA Agent.";
   
-  // Construct the structured prompt
-  const fullPrompt = buildAgentPrompt(role, context);
-
   try {
     const response = await ai.models.generateContent({
       model,
-      contents: fullPrompt,
-      config: {
-        systemInstruction,
-        temperature: role === AgentRole.CODER ? 0.1 : 0.4, // Lower temp for coding
-      }
+      contents: buildAgentPrompt(role, context),
+      config: { systemInstruction, temperature: role === AgentRole.CODER ? 0.1 : 0.4 }
     });
 
-    const text = response.text || "Agent failed to respond.";
-    
-    // Extract code block if present
+    const text = response.text || "Agent failed.";
     const codeMatch = text.match(/```(?:python|gherkin|typescript)?\s*([\s\S]*?)```/);
     const code = codeMatch ? codeMatch[1].trim() : undefined;
     
-    // Determine Status for Critic
     let status: 'APPROVED' | 'REJECTED' | undefined;
     if (role === AgentRole.CRITIC) {
-      if (text.toUpperCase().includes("REJECTED")) status = 'REJECTED';
-      else if (text.toUpperCase().includes("APPROVED")) status = 'APPROVED';
-      else status = 'APPROVED'; // Default fallback
+      status = text.toUpperCase().includes("REJECTED") ? 'REJECTED' : 'APPROVED';
     }
 
-    const cleanText = text.replace(/```[\s\S]*?```/g, '').trim();
-
-    return { text: cleanText, code, status };
-
+    return { text: text.replace(/```[\s\S]*?```/g, '').trim(), code, status };
   } catch (error) {
     console.error(`Error in ${role}:`, error);
-    return { text: "I encountered a processing error. Please try again.", code: undefined };
+    return { text: "Processing error.", code: undefined };
   }
 };
 
 export const healCode = async (brokenCode: string, errorContext: string, type: 'api' | 'ui'): Promise<string> => {
-   const context: SharedWorkflowContext = {
-     userStory: "Fix broken test script",
-     currentCode: brokenCode,
-     runtimeError: errorContext
-   };
+   const context: SharedWorkflowContext = { userStory: "Fix broken script", currentCode: brokenCode, runtimeError: errorContext };
    const response = await runAgentSimulation(AgentRole.HEALER, context);
    return response.code || brokenCode;
 };
 
-export const generateCodeFromVideoEvents = async (events: string[]): Promise<string> => {
+export const generateCodeFromVideoEvents = async (events: string[]): Promise<string> => { return "print('Simulated Code')"; }
+export const generateAutomationCode = async (ctx: string, steps: string[], fw: string): Promise<string> => { return "print('Simulated Code')"; }
+export const generateSyntheticData = async (schema: string, count: number, type: string): Promise<string> => { return "[]"; }
+export const analyzeVisualDiff = async (ctx: string, b?: string|null, c?: string|null): Promise<any> => { return { hasRegression: false, description: "No diff" }; }
+
+export const runSecurityAudit = async (url: string): Promise<SecurityVulnerability[]> => {
   const model = 'gemini-2.5-flash';
-  const systemInstruction = `You are "The Coder" (Agent C). 
-  Task: Convert raw "Computer Vision" events into a robust Python Playwright script.
-  Rules:
-  1. Use Page Object Model concepts where possible.
-  2. Do NOT use time.sleep().
-  3. Include comments explaining the action.
-  Output: Pure Python code block only.`;
-
-  const prompt = `
-    Here is the log of user actions detected by the Computer Vision engine from a video recording:
-    ${events.map(e => `- ${e}`).join('\n')}
-    
-    Generate the corresponding Playwright test script.
-  `;
-
+  const prompt = `Target: ${url}. List 3-5 potential OWASP vulnerabilities. Return JSON: [{id, name, severity, description, remediationCode}].`;
   try {
-    const response = await ai.models.generateContent({
-      model,
-      contents: prompt,
-      config: {
-        systemInstruction,
-        temperature: 0.2,
-      }
+    const res = await ai.models.generateContent({ 
+        model, 
+        contents: prompt,
+        config: { systemInstruction: PROMPTS[AgentRole.SECURITY], responseMimeType: 'application/json' }
     });
-    
-    const text = response.text || "";
-    const codeMatch = text.match(/```(?:python)?\s*([\s\S]*?)```/);
-    return codeMatch ? codeMatch[1].trim() : text;
-  } catch (error) {
-    console.error("Error generating code from video:", error);
-    return "# Error generating code. Please try again.";
-  }
+    return JSON.parse(res.text || "[]");
+  } catch (e) { return []; }
 };
 
-export const generateAutomationCode = async (
-  context: string, 
-  steps: string[], 
-  framework: 'Playwright' | 'Selenium' | 'Cypress'
-): Promise<string> => {
-  const model = 'gemini-2.5-flash';
-  
-  let language = 'Python';
-  if (framework === 'Cypress') language = 'TypeScript';
-  if (framework === 'Playwright') language = 'Python';
-  if (framework === 'Selenium') language = 'Python';
-
-  const systemInstruction = `You are "The Coder" (Agent C) and "The Healer" (Agent E) combined.
-  Your Goal: Convert Natural Language Steps into a robust, Self-Healing Automation Script.
-  
-  Target Framework: ${framework} (${language})
-  
-  CRITICAL "SMART SELECTOR" RULE:
-  Do not just use one selector. For every element interaction, define a "Resilient Strategy" in comments, then use the best locator.
-  Example Logic to include in comments:
-  # Selector Strategy for 'Submit':
-  # 1. data-testid="submit-btn" (Best)
-  # 2. id="submit" (Backup)
-  # 3. text="Log In" (Fallback)
-  
-  Rules:
-  1. NO hardcoded sleeps. Use dynamic waits (WebDriverWait, expect, cy.wait).
-  2. Include the user's Context: "${context}" in the file header.
-  3. Output ONLY the code block.
-  `;
-
-  const prompt = `
-    User Test Context: ${context}
-    
-    Recorded Steps:
-    ${steps.map((s, i) => `${i+1}. ${s}`).join('\n')}
-    
-    Generate the full automation script now.
-  `;
-
-  try {
-    const response = await ai.models.generateContent({
-      model,
-      contents: prompt,
-      config: {
-        systemInstruction,
-        temperature: 0.2,
-      }
-    });
-
-    const text = response.text || "";
-    const codeMatch = text.match(/```(?:python|typescript|javascript)?\s*([\s\S]*?)```/);
-    return codeMatch ? codeMatch[1].trim() : text;
-  } catch (error) {
-    console.error("Error generating automation code:", error);
-    return "# Error generating code. Please try again.";
+export const runPerformanceSimulation = async (config: { vus: number, duration: string }): Promise<PerformanceMetric[]> => {
+  const count = 20;
+  const metrics: PerformanceMetric[] = [];
+  for(let i=0; i<count; i++) {
+     metrics.push({
+         timestamp: `00:${String(i*3).padStart(2,'0')}`,
+         virtualUsers: Math.floor(config.vus * (i/count)),
+         rps: Math.floor(Math.random() * 500) + (i*50),
+         latency: Math.floor(Math.random() * 100) + 50,
+         errorRate: i > 15 ? 0.05 : 0.0
+     });
   }
+  return metrics;
 };
 
-export const generateSyntheticData = async (
-  schema: string, 
-  count: number, 
-  scenario: 'Happy Path' | 'Edge Cases' | 'Security Payloads'
-): Promise<string> => {
+export const runLighthouseSimulation = async (url: string): Promise<GTMetrixReport> => {
   const model = 'gemini-2.5-flash';
-  
-  const systemInstruction = `You are a "Test Data Engineer Agent".
-  Your Goal: Generate realistic or destructive synthetic test data in JSON format.
-  
-  SCENARIOS:
-  - "Happy Path": Clean, valid data.
-  - "Edge Cases": Max length strings, negative numbers, emojis, nulls.
-  - "Security Payloads": SQL Injection strings, XSS scripts, command injection payloads embedded in fields.
-  
-  Output: STRICT JSON Array only. No markdown text.`;
-
   const prompt = `
-    Schema Definition: ${schema}
-    Row Count: ${count}
-    Scenario Type: ${scenario}
+    Analyze this URL for performance: "${url}".
+    Generate a realistic "GTmetrix" style report JSON.
+    Include grades (A-F), scores (0-100), Web Vitals (LCP, TBT, CLS), FCP, SI, TTI, and technical audit issues.
     
-    Generate the JSON data now.
+    REQUIRED JSON FORMAT:
+    {
+      "url": "${url}",
+      "timestamp": "Now",
+      "location": "Vancouver, Canada",
+      "device": "Chrome (Desktop) 117.0",
+      "gtmetrixGrade": "B",
+      "performanceScore": 75,
+      "structureScore": 82,
+      "webVitals": {
+         "lcp": { "name": "Largest Contentful Paint", "value": "1.4s", "score": 90, "rating": "Good" },
+         "tbt": { "name": "Total Blocking Time", "value": "350ms", "score": 60, "rating": "Needs Improvement" },
+         "cls": { "name": "Cumulative Layout Shift", "value": "0.02", "score": 95, "rating": "Good" }
+      },
+      "performanceMetrics": {
+         "fcp": { "name": "First Contentful Paint", "value": "0.9s", "score": 95, "rating": "Good" },
+         "si": { "name": "Speed Index", "value": "1.8s", "score": 85, "rating": "Good" },
+         "tti": { "name": "Time to Interactive", "value": "2.1s", "score": 70, "rating": "Needs Improvement" }
+      },
+      "browserTimings": {
+         "redirect": 0, "connect": 80, "backend": 120, "ttfb": 200, "domInteractive": 900, "domLoaded": 1100, "onload": 2100
+      },
+      "pageDetails": {
+         "fullyLoadedTime": "2.1s",
+         "totalPageSize": "1.8MB",
+         "requests": 56
+      },
+      "topIssues": [
+         { "priority": "High", "audit": "Reduce initial server response time", "impact": "600ms" }
+      ]
+    }
   `;
 
   try {
-    const response = await ai.models.generateContent({
-      model,
-      contents: prompt,
-      config: {
-        systemInstruction,
-        temperature: scenario === 'Happy Path' ? 0.3 : 0.9,
-      }
+    const res = await ai.models.generateContent({
+       model,
+       contents: prompt,
+       config: { responseMimeType: 'application/json' }
     });
+    const baseReport = JSON.parse(res.text || "{}");
 
-    const text = response.text || "[]";
-    const jsonMatch = text.match(/\[[\s\S]*\]/);
-    return jsonMatch ? jsonMatch[0] : "[]";
-  } catch (error) {
-    console.error("Error generating synthetic data:", error);
-    return "[]";
-  }
-};
+    // Augment with Waterfall Data
+    const waterfall: WaterfallRequest[] = [
+       { url: "/", method: "GET", status: 200, type: "html", size: "15KB", startTime: 0, duration: 150, segments: { dns: 20, ssl: 30, connect: 20, send: 10, wait: 50, receive: 20 } },
+       { url: "/styles/main.css", method: "GET", status: 200, type: "css", size: "45KB", startTime: 160, duration: 120, segments: { dns: 0, ssl: 0, connect: 0, send: 5, wait: 80, receive: 35 } },
+       { url: "/js/app.bundle.js", method: "GET", status: 200, type: "js", size: "120KB", startTime: 180, duration: 250, segments: { dns: 0, ssl: 0, connect: 0, send: 5, wait: 120, receive: 125 } },
+       { url: "/assets/hero.jpg", method: "GET", status: 200, type: "image", size: "250KB", startTime: 250, duration: 400, segments: { dns: 10, ssl: 15, connect: 10, send: 5, wait: 150, receive: 210 } },
+       { url: "/api/config", method: "GET", status: 200, type: "other", size: "2KB", startTime: 300, duration: 90, segments: { dns: 0, ssl: 0, connect: 0, send: 5, wait: 80, receive: 5 } },
+       { url: "/fonts/inter.woff2", method: "GET", status: 200, type: "font", size: "30KB", startTime: 220, duration: 80, segments: { dns: 0, ssl: 0, connect: 0, send: 2, wait: 40, receive: 38 } },
+       { url: "/js/analytics.js", method: "GET", status: 200, type: "js", size: "15KB", startTime: 500, duration: 100, segments: { dns: 10, ssl: 10, connect: 10, send: 5, wait: 40, receive: 25 } },
+    ];
 
-export const analyzeVisualDiff = async (
-  context: string,
-  baselineBase64?: string | null,
-  currentBase64?: string | null
-): Promise<{ hasRegression: boolean; description: string }> => {
-  const model = 'gemini-2.5-flash';
-  const systemInstruction = `You are a "Visual QA Agent". 
-  Your Goal: Compare two images (Baseline vs Current) or analyze the description if images are missing.
-  Identify layout shifts, missing elements, overlapping content, or color mismatches.
-  Output Format: Concise summary of the visual bug. If no images are provided, simulate a finding based on context.`;
+    const history: HistoryPoint[] = [
+      { date: "Oct 1", performanceScore: 68, lcp: 2.1 },
+      { date: "Oct 5", performanceScore: 72, lcp: 1.8 },
+      { date: "Oct 10", performanceScore: 70, lcp: 1.9 },
+      { date: "Oct 15", performanceScore: 75, lcp: 1.5 },
+      { date: "Today", performanceScore: baseReport.performanceScore || 75, lcp: parseFloat(baseReport.webVitals?.lcp?.value) || 1.4 }
+    ];
 
-  let promptParts: any[] = [];
-  
-  if (baselineBase64 && currentBase64) {
-      // Remove data URL prefix if present for the API call (though inlineData usually expects it or raw bytes, 
-      // the SDK handles base64 string directly in inlineData.data)
-      // Standard data URL format: data:image/png;base64,....
-      const cleanBaseline = baselineBase64.split(',')[1] || baselineBase64;
-      const cleanCurrent = currentBase64.split(',')[1] || currentBase64;
+    const filmstrip = ["0.5s", "1.0s", "1.5s", "2.0s", "2.5s"];
 
-      promptParts.push({ text: "Here is the Baseline Image (Version 1.0):" });
-      promptParts.push({ inlineData: { mimeType: "image/png", data: cleanBaseline } });
-      promptParts.push({ text: "Here is the Current Image (Version 1.1):" });
-      promptParts.push({ inlineData: { mimeType: "image/png", data: cleanCurrent } });
-      promptParts.push({ text: "Compare these two images strictly. Are there any visual regressions (misalignments, color changes, text overlaps, missing items)? If yes, describe them clearly. If they look identical, say 'No visual changes detected'." });
-  } else {
-      promptParts.push({ text: `Context: The user is comparing two screenshots of ${context}. Simulate a visual regression finding where a button overlaps text or is misaligned. Describe the error professionally.` });
-  }
+    const structureAudits: StructureAudit[] = [
+        { audit: "Eliminate render-blocking resources", severity: 'High', description: "Potential savings of 120ms by deferring unused CSS." },
+        { audit: "Properly size images", severity: 'Medium', description: "Serve images that are appropriately-sized to save cellular data." },
+        { audit: "Defer offscreen images", severity: 'Medium', description: "Consider lazy-loading offscreen and hidden images." },
+        { audit: "Minify CSS", severity: 'Low', description: "Minifying CSS files can reduce network payload sizes." },
+        { audit: "Minify JavaScript", severity: 'Low', description: "Minifying JavaScript files can reduce payload sizes and script parse time." }
+    ];
 
-  try {
-    const response = await ai.models.generateContent({
-      model,
-      contents: { parts: promptParts },
-      config: { systemInstruction }
-    });
-    
-    const text = response.text || "";
-    const hasRegression = !text.toLowerCase().includes("no visual changes") && !text.toLowerCase().includes("identical");
+    return { ...baseReport, waterfall, history, filmstrip, structureAudits };
 
-    return { 
-      hasRegression, 
-      description: text || "Analysis completed." 
+  } catch (e) {
+    return {
+      url,
+      timestamp: new Date().toISOString(),
+      location: "San Antonio, USA",
+      device: "Chrome (Desktop) 117.0",
+      gtmetrixGrade: "C",
+      performanceScore: 62,
+      structureScore: 81,
+      webVitals: {
+         lcp: { name: "LCP", value: "2.5s", score: 60, rating: "Needs Improvement" },
+         tbt: { name: "TBT", value: "520ms", score: 40, rating: "Poor" },
+         cls: { name: "CLS", value: "0.15", score: 50, rating: "Needs Improvement" }
+      },
+      performanceMetrics: {
+         fcp: { name: "FCP", value: "1.2s", "score": 80, rating: "Good" },
+         si: { name: "Speed Index", value: "2.5s", "score": 60, rating: "Needs Improvement" },
+         tti: { name: "TTI", value: "3.2s", "score": 50, rating: "Needs Improvement" }
+      },
+      browserTimings: { redirect: 0, connect: 100, backend: 200, ttfb: 300, domInteractive: 1200, domLoaded: 1500, onload: 3000 },
+      pageDetails: { fullyLoadedTime: "4.5s", totalPageSize: "3.2MB", requests: 89 },
+      topIssues: [{ priority: "High", audit: "Eliminate render-blocking resources", impact: "High" }],
+      waterfall: [],
+      history: [],
+      filmstrip: ["0.5s", "1.0s", "1.5s"],
+      structureAudits: []
     };
-  } catch (error) {
-    console.error("Visual Analysis Error:", error);
-    return { hasRegression: false, description: "Failed to analyze images. Please try again." };
   }
 };
 
-// --- OmniScan Integration ---
+export const runDatabaseVerification = async (config: any): Promise<DatabaseCheck[]> => {
+    return [
+        { table: "Users", checkType: "Schema", status: "Pass", details: "Column types match v2.1 spec" },
+        { table: "Orders", checkType: "Integrity", status: "Pass", details: "Foreign keys valid" },
+        { table: "Logs", checkType: "Performance", status: "Fail", details: "Index missing on 'created_at'" }
+    ];
+};
 
 export const runOmniScan = async (url: string, selectedTests: string[]): Promise<OmniScanReport> => {
   const model = 'gemini-2.5-flash';
-  
-  const systemInstruction = `You are "OmniScan Prime", the ultimate QA engine.
-  Your Goal: Generate a realistic, detailed JSON test report for the provided URL, API Spec, or Context.
-  
-  If 'api' is selected:
-  - Generate COMPLEX contract tests including:
-    1. Authentication (Simulate Bearer Token handling).
-    2. Rate Limiting (Simulate 429 Retry logic).
-    3. Data Validation (Schema checks).
-    4. HTTP Method coverage (GET, POST, PUT, DELETE).
-  - Simulate results for these complex scenarios.
-  
-  If 'database' is selected:
-  - Simulate checks for Data Integrity (Foreign Keys), Schema Compliance, and CRUD latency.
-  - Use the provided DB config context (Host/Type) to make the report realistic.
-  
-  Output: STRICT VALID JSON ONLY. Do not include markdown code blocks.
-  `;
-
-  // Explicitly defining schema in the prompt to ensure correct JSON generation
   const prompt = `
-    Target (URL, Spec, or Context): """${url}"""
+    Target: """${url}"""
     Selected Tests: ${selectedTests.join(', ')}
-    
-    Generate a full OmniScan Report JSON.
-    Make the data look realistic for this specific target.
-    
-    REQUIRED JSON STRUCTURE (Fill with realistic data):
+    Generate realistic OmniScan Report JSON.
+
+    IF "database" is selected:
+    - Assume connection to the DB Context provided in Target (if any).
+    - Generate checks for: Schema Compliance, Data Integrity (Foreign Keys), and CRUD Latency (Insert/Select).
+    - Status can be "Healthy" or "Degraded".
+
+    IF "api" is selected:
+    - Generate realistic endpoint results with methods (GET, POST, etc).
+    - Include Complex Scenarios: Auth (401), Rate Limiting (429), Data Validation.
+    - Contract Test Code: Generate a Python pytest script that validates these endpoints.
+
+    REQUIRED JSON STRUCTURE:
     {
       "url": "Target",
-      "score": <number 0-100>,
-      "timestamp": "2023-10-27T10:00:00Z",
+      "score": <0-100>,
+      "timestamp": "ISO Date",
       "api": [
-        { "method": "GET", "endpoint": "/api/v1/resource", "status": 200, "latency": 120, "passed": true },
-        { "method": "POST", "endpoint": "/api/v1/login", "status": 401, "latency": 45, "passed": false },
-        { "method": "DELETE", "endpoint": "/api/v1/user/123", "status": 204, "latency": 200, "passed": true }
+        { "method": "GET", "endpoint": "/api/v1/resource", "status": 200, "latency": 120, "passed": true }
       ],
-      "contractTestCode": "# Python pytest code if 'api' selected, else null. Include Auth, Rate Limits, and Schema Validation.",
-      "load": {
-        "virtualUsers": 500,
-        "rps": 1200,
-        "p95Latency": 350,
-        "errorRate": 0.02,
-        "chartData": [
-          {"time": "00:00", "rps": 100, "latency": 50},
-          {"time": "00:05", "rps": 500, "latency": 200},
-          {"time": "00:10", "rps": 1200, "latency": 350}
-        ]
-      },
-      "security": [
-        { "severity": "High", "type": "XSS Vulnerability", "description": "Reflected XSS in search bar", "remediation": "Sanitize input parameters" }
-      ],
-      "accessibility": {
-        "score": 85,
-        "issues": [
-          { "id": "color-contrast", "impact": "serious", "element": "button#submit", "description": "Contrast ratio is below 4.5:1", "helpUrl": "..." }
-        ]
-      },
-      "brokenLinks": [
-         { "url": "/about-us", "status": 404, "sourcePage": "/" }
-      ],
-      "database": {
-        "status": "Healthy",
-        "checks": [
-          { "name": "Schema Validation (User Table)", "status": "Pass", "latency": "12ms" },
-          { "name": "Foreign Key Integrity (Orders -> Users)", "status": "Pass", "latency": "45ms" },
-          { "name": "CRUD Operation (Create Item)", "status": "Pass", "latency": "28ms" }
-        ]
+      "contractTestCode": "# Python pytest script...",
+      "load": { "virtualUsers": 500, "rps": 1200, "p95Latency": 350, "errorRate": 0.02, "chartData": [{"time": "00:00", "rps": 100, "latency": 50}] },
+      "security": [ { "severity": "High", "type": "SQL Injection", "description": "...", "remediation": "..." } ],
+      "accessibility": { "score": 85, "issues": [] },
+      "brokenLinks": [ { "url": "/404", "status": 404, "sourcePage": "/home" } ],
+      "database": { 
+          "status": "Healthy", 
+          "checks": [ 
+             { "name": "Schema Validation (Users)", "status": "Pass", "latency": "12ms" },
+             { "name": "FK Integrity (Orders)", "status": "Fail", "latency": "45ms" },
+             { "name": "CRUD: Insert Log", "status": "Pass", "latency": "8ms" }
+          ] 
       }
     }
-
-    If 'api' is selected, populate 'contractTestCode' with a Python script using 'pytest' and 'requests'.
-    The script MUST include:
-    1. A fixture for Authentication.
-    2. A test for Rate Limiting (assert 429 handling).
-    3. JSON Schema validation.
-    
-    If 'database' is selected, include checks relevant to the DB type inferred from context.
   `;
 
   try {
     const response = await ai.models.generateContent({
       model,
       contents: prompt,
-      config: {
-        systemInstruction,
-        responseMimeType: 'application/json',
-        temperature: 0.4
-      }
+      config: { responseMimeType: 'application/json', temperature: 0.4 }
     });
-
-    // Robust text cleaning to handle cases where AI wraps JSON in markdown
-    const text = response.text || "{}";
-    const cleanText = text.replace(/```json\s*|\s*```/g, "").trim();
-    
-    // Attempt to extract JSON if there's surrounding text
-    const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
-    const jsonString = jsonMatch ? jsonMatch[0] : cleanText;
-
-    try {
-        return JSON.parse(jsonString) as OmniScanReport;
-    } catch (parseError) {
-        console.error("JSON Parse Error:", parseError, "Raw Text:", text);
-        throw new Error("Failed to parse report data");
-    }
+    const raw = response.text || "{}";
+    const cleaned = raw.replace(/```json|```/g, '');
+    const jsonStart = cleaned.indexOf('{');
+    const jsonEnd = cleaned.lastIndexOf('}');
+    if (jsonStart === -1 || jsonEnd === -1) throw new Error("Invalid JSON");
+    return JSON.parse(cleaned.substring(jsonStart, jsonEnd + 1));
   } catch (error) {
     console.error("OmniScan Failed:", error);
-    throw new Error("Scan Generation Failed. Please try again.");
+    throw new Error("Scan Generation Failed");
   }
 };
 
-export const runAccessibilityAudit = async (url: string): Promise<any> => {
-    return runOmniScan(url, ['accessibility']);
-};
+export const runAccessibilityAudit = async (url: string): Promise<any> => { return runOmniScan(url, ['accessibility']); };

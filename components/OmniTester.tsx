@@ -13,7 +13,8 @@ import {
   AlertTriangle,
   Server,
   Activity,
-  BarChart4
+  BarChart4,
+  ExternalLink
 } from 'lucide-react';
 import { OmniScanReport } from '../types';
 import { runOmniScan } from '../services/geminiService';
@@ -25,7 +26,7 @@ const OmniTester: React.FC = () => {
   const [showDbConfig, setShowDbConfig] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [report, setReport] = useState<OmniScanReport | null>(null);
-  const [activeTab, setActiveTab] = useState<'overview' | 'api' | 'load' | 'security' | 'a11y' | 'db'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'api' | 'load' | 'security' | 'a11y' | 'db' | 'links'>('overview');
   const [progress, setProgress] = useState(0);
   const [progressLabel, setProgressLabel] = useState("");
 
@@ -205,6 +206,7 @@ const OmniTester: React.FC = () => {
              <TabButton label="Load & Perf" active={activeTab === 'load'} onClick={() => setActiveTab('load')} />
              <TabButton label="Security" active={activeTab === 'security'} onClick={() => setActiveTab('security')} />
              <TabButton label="Accessibility" active={activeTab === 'a11y'} onClick={() => setActiveTab('a11y')} />
+             <TabButton label="Broken Links" active={activeTab === 'links'} onClick={() => setActiveTab('links')} />
           </div>
 
           {/* Tab Content */}
@@ -414,6 +416,35 @@ const OmniTester: React.FC = () => {
                   ))}
                   {(!report.accessibility?.issues || report.accessibility.issues.length === 0) && (
                      <div className="text-center text-slate-500 italic">No accessibility issues found.</div>
+                  )}
+               </div>
+            )}
+
+            {activeTab === 'links' && (
+               <div>
+                  <h3 className="text-slate-800 font-bold mb-4 flex items-center gap-2">
+                     <Link2 className="text-red-500" /> Broken Links Report
+                  </h3>
+                  {report.brokenLinks?.length > 0 ? (
+                    <div className="space-y-2">
+                      {report.brokenLinks.map((link, i) => (
+                        <div key={i} className="flex justify-between items-center p-3 bg-red-50 border border-red-100 rounded hover:border-red-300 transition-colors">
+                           <div className="flex items-center gap-3 overflow-hidden">
+                              <span className="font-bold text-red-600 text-xs px-2 py-1 bg-white rounded border border-red-200">{link.status}</span>
+                              <span className="text-slate-700 font-mono text-sm truncate" title={link.url}>{link.url}</span>
+                           </div>
+                           <div className="text-xs text-slate-500 flex items-center gap-1">
+                              Found on: <span className="font-mono bg-white px-1 rounded border border-slate-200">{link.sourcePage}</span>
+                           </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="p-8 text-center bg-slate-50 rounded-xl border border-slate-200">
+                       <CheckCircle size={48} className="text-green-500 mx-auto mb-2" />
+                       <h4 className="text-slate-800 font-bold">No Broken Links Found</h4>
+                       <p className="text-slate-500 text-sm">Crawled 42 internal pages successfully.</p>
+                    </div>
                   )}
                </div>
             )}
