@@ -86,7 +86,18 @@ const CodelessBridge: React.FC = () => {
         const blob = new Blob(chunksRef.current, { type: 'video/webm' });
         const url = URL.createObjectURL(blob);
         setRecordedVideoUrl(url);
-        stream.getTracks().forEach(track => track.stop()); // Stop sharing
+        
+        // Stop all tracks to release the camera/screen
+        stream.getTracks().forEach(track => track.stop());
+        
+        setIsScreenRecording(false);
+      };
+
+      // Handle the case where the user stops sharing via the browser UI
+      stream.getVideoTracks()[0].onended = () => {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop();
+        }
         setIsScreenRecording(false);
       };
 
@@ -95,7 +106,10 @@ const CodelessBridge: React.FC = () => {
       setStep('recording');
     } catch (err) {
       console.error("Error starting screen record:", err);
-      alert("Could not start screen recording. Please check permissions.");
+      // Don't alert if user just cancelled
+      if ((err as Error).name !== 'NotAllowedError') {
+         alert("Could not start screen recording. Please check permissions.");
+      }
     }
   };
 

@@ -7,6 +7,7 @@ export enum AgentRole {
   HEALER = 'The Healer',
   SECURITY = 'The Security Auditor',
   PERFORMANCE = 'The Performance Engineer',
+  ACCESSIBILITY = 'The A11y Coach',
   IDLE = 'System Idle'
 }
 
@@ -26,6 +27,17 @@ export interface AgentLog {
   type: 'info' | 'success' | 'warning' | 'error' | 'code';
   content?: string; // For code blocks or structured output
   errorContext?: string; // For debugging details
+}
+
+export interface AgentProduct {
+  id: string;
+  name: string;
+  role: AgentRole;
+  description: string;
+  icon: string;
+  category: 'Security' | 'Performance' | 'Accessibility' | 'Data';
+  price: string;
+  installed: boolean;
 }
 
 // --- Structured Communication Protocol ---
@@ -216,6 +228,21 @@ export interface OmniScanReport {
   accessibility: { score: number; issues: A11yIssue[] };
   brokenLinks: BrokenLinkResult[];
   database: { status: 'Healthy' | 'Degraded'; checks: { name: string; status: 'Pass' | 'Fail'; latency: string }[] };
+  lighthouse?: {
+    scores: {
+      performance: number;
+      accessibility: number;
+      bestPractices: number;
+      seo: number;
+    };
+    metrics: {
+      lcp: string;
+      fcp: string;
+      cls: string;
+      tbt: string;
+    };
+    audits: string[];
+  };
 }
 
 // --- Responsive Studio (Sizzy) Types ---
@@ -229,7 +256,7 @@ export interface DeviceProfile {
   vendor: 'Apple' | 'Samsung' | 'Google' | 'Microsoft' | 'Other';
   os: 'ios' | 'android' | 'mac' | 'windows' | 'linux';
   userAgent: string;
-  skin: 'default' | 'notch' | 'dynamic-island' | 'punch-hole' | 'pill' | 'macbook' | 'ipad';
+  skin: 'default' | 'notch' | 'dynamic-island' | 'punch-hole' | 'pill' | 'macbook' | 'ipad' | 'home-button' | 'teardrop';
 }
 
 export interface ResponsiveSession {
@@ -241,4 +268,5 @@ export interface ResponsiveSession {
   syncClick: boolean;
   syncInput: boolean;
   activeDevices: string[]; // Device IDs
+  colorScheme: 'original' | 'dark' | 'grayscale' | 'high-contrast';
 }
