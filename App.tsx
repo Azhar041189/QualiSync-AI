@@ -166,6 +166,15 @@ const App: React.FC = () => {
          updateStatus(AgentRole.PERFORMANCE, AgentStatus.SUCCESS);
       }
 
+      const a11yAgent = marketplaceAgents.find(a => a.id === 'a11y_01' && a.installed);
+      if (a11yAgent) {
+         setActiveRole(AgentRole.ACCESSIBILITY); updateStatus(AgentRole.ACCESSIBILITY, AgentStatus.THINKING);
+         addLog(AgentRole.ACCESSIBILITY, "Running accessibility check...", 'info');
+         const a11yResult = await runAgentSimulation(AgentRole.ACCESSIBILITY, workflowContext);
+         addLog(AgentRole.ACCESSIBILITY, "Check Complete", 'success', a11yResult.text);
+         updateStatus(AgentRole.ACCESSIBILITY, AgentStatus.SUCCESS);
+      }
+
       // 4. RUNTIME / HEALER
       setActiveRole(AgentRole.IDLE); addLog(AgentRole.IDLE, "Deploying...", 'info');
       await new Promise(r => setTimeout(r, 1000));
